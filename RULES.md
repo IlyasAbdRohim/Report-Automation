@@ -80,4 +80,6 @@
 3. **Pembersihan Otomatis**: Bersihkan blok lama di halaman Result sebelum menuliskan ringkasan baru agar tidak terjadi duplikasi data.
 4. **Header & Footer**:
    - Header: `👤 Pelapor: Ilyas (IT)  |  🎯 Target: Manajemen  |  👥 Reviewer: Pak Yendy & Mba Yemima`
+   - Keterangan Dasar Laporan: `ℹ️ Dasar Laporan: Disusun berdasarkan kebutuhan operasional & update perbaikan yang dishare oleh tim IT Development.`
    - Footer: `📋 Disusun oleh Ilyas (IT) via Python Automation pada [Waktu].` *(Tanpa menyebut nama Ko Lukas atau kata CEO)*.
+

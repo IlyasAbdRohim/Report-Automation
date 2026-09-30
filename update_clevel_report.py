@@ -543,7 +543,8 @@ def run_comprehensive_update():
                 "rich_text": [
                     rt("👤 Pelapor: ", bold=True), rt("Ilyas (IT)  |  "),
                     rt("🎯 Target: ", bold=True), rt("Manajemen & Stakeholder Terkait  |  "),
-                    rt("👥 Reviewer: ", bold=True), rt("Pak Yendy & Mba Yemima (IT Specialist)")
+                    rt("👥 Reviewer: ", bold=True), rt("Pak Yendy & Mba Yemima (IT Specialist)\n"),
+                    rt("ℹ️ Dasar Laporan: ", bold=True), rt("Disusun berdasarkan kebutuhan operasional & update perbaikan yang dishare oleh tim IT Development.")
                 ]
             }
         },
@@ -558,6 +559,7 @@ def run_comprehensive_update():
                     rt("Ringkasan Eksekutif (Overall Summary):\n", bold=True),
                     rt(
                         f"Secara keseluruhan, stabilitas sistem OlshopERP beroperasi normal dengan total {done_val} task terselesaikan ({done_pct}% dari {total_tasks} task) pada alur transaksi dan finansial. "
+                        f"Report ini disusun berdasarkan input kebutuhan operasional di lapangan serta update perbaikan yang dishare oleh tim IT Development. "
                         f"Seluruh perbaikan yang berstatus Done telah diurutkan berdasarkan skala urgensi dan perbaikan penting (dimulai dari isu finansial & beban server hingga request operasional). "
                         f"Fokus minggu ini mencakup optimasi query berat All Sales Order, penyesuaian format Instant Settlement Shopee, "
                         f"penanganan stopper processing User, serta menunggu keputusan manajemen pada {len(decision_rows)} agenda strategis (Upfos & Colli v2)."
