@@ -47,8 +47,9 @@
    - **Metrik Dinamis**: Angka total task, persentase Done, Ready to Test, In Progress, dan Backlog **WAJIB diekstrak langsung dari tabel Metric dokumen terbaru**, bukan angka statis/hardcoded.
    - **Tabel 4 Dinamis (Bugs Krusial Open)**: Selalu diekstrak dinamis dari tabel *Outstanding / Section 5* dan *Ready to Test / Section 4* dokumen mingguan terbaru. Isu yang sudah beres di minggu baru otomatis hilang dari Tabel 4 dan berpindah ke Tabel 1 (Done), sehingga tidak ada isu kadaluarsa yang menumpuk.
 6. **Section New Request User (Result Data Report)**:
-   - Seluruh item yang diinputkan pada section *New Request User* di halaman Raw Data Report (baik yang berstatus *Done*, *In Progress*, *Pending*, maupun *Perlu Confirm User*) **WAJIB ditampilkan 100%** pada Tabel 3 (**New Request User & Kendala Tim Operasional**).
-   - Item pada section ini yang berstatus *Done* tetap dimasukkan juga ke Tabel 1A sebagai highlight pencapaian selesai.
+   - Pada Tabel 3 (**New Request User & Kendala Tim Operasional**), **HANYA** tampilkan request user yang berstatus **SELAIN DONE** (seperti *In Progress*, *Pending*, *Perlu Confirm User*).
+   - Item pada section *New Request User* yang berstatus **Done** **DILARANG** ditampilkan di Tabel 3 untuk mencegah redundansi, dan **HANYA** dimasukkan ke **Tabel 1A (Done Highlight)** sebagai poin perbaikan penting yang telah selesai.
+   - Catatan kendala operasional (*Stopper Processing*) tetap dipisahkan tersendiri sebagai sub-catatan di bawah Tabel 3.
 
 ---
 

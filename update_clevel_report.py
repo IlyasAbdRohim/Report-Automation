@@ -408,7 +408,7 @@ def parse_raw_data_dynamically(raw_blocks):
             clean_desc = clean_desc_text(desc)
             status_badge, status_label = parse_status_badge(text)
 
-            # Jika berstatus Done, tetap catat ke raw_done_rows untuk Tabel 1A
+            # Jika berstatus Done, catat ke raw_done_rows untuk Tabel 1A, dan jangan tampilkan di Tabel 3 (mencegah redundansi)
             if status_label == "Done":
                 if "instant settlement" in modul.lower() or "settlement" in modul.lower():
                     impact = "Akurasi finansial pencairan kas omzet marketplace tanpa selisih desimal."
@@ -417,6 +417,7 @@ def parse_raw_data_dynamically(raw_blocks):
                 else:
                     impact = "Perbaikan alur operasional selesai dan siap digunakan."
                 raw_done_rows.append([modul, clean_desc, impact])
+                continue
 
             user_label = "User Operasional"
             if "purchase" in modul.lower() or "logistik" in desc.lower():
