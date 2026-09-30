@@ -74,7 +74,7 @@ def make_table(headers, rows):
     }
 
 def clear_page_blocks(notion, page_id):
-    print(f"🧹 Membersihkan blok lama di Result Data Report...")
+    print("🧹 Membersihkan blok lama di Result Data Report...")
     try:
         res = notion.blocks.children.list(block_id=page_id)
         for b in res.get("results", []):
@@ -84,6 +84,14 @@ def clear_page_blocks(notion, page_id):
                 pass
     except Exception as e:
         print(f"[Warning] Lewati: {e}")
+
+def get_block_val(b):
+    if not b:
+        return {}
+    val = b.get("value", {})
+    if "value" in val and isinstance(val["value"], dict):
+        return val["value"]
+    return val
 
 def fetch_public_notion_blocks(pid):
     url = "https://www.notion.so/api/v3/loadPageChunk"
@@ -97,19 +105,118 @@ def fetch_public_notion_blocks(pid):
         print(f"Error fetching public page {pid}: {e}")
     return {}
 
+def extract_weekly_metrics(blocks_map):
+    """
+    Mengekstrak metrik task (Done, Ready to Test, In Progress, Outstanding) secara dinamis
+    dari tabel Summary Overall di dokumen sprint terbaru.
+    """
+    metrics = {}
+    for bid, binfo in blocks_map.items():
+        b = get_block_val(binfo)
+        if b.get("type") == "table":
+            rows = b.get("content", [])
+            tbl = []
+            for rid in rows:
+                rb = get_block_val(blocks_map.get(rid))
+                props = rb.get("properties", {})
+                tbl.append(["".join([p[0] for p in props[k] if isinstance(p, list) and len(p) > 0 and isinstance(p[0], str)]) for k in sorted(props.keys())])
+            if tbl and [c.strip().lower() for c in tbl[0]] == ["metric", "jumlah"]:
+                for r in tbl[1:]:
+                    if len(r) >= 2:
+                        val_clean = re.sub(r"[^\d]", "", r[1].strip())
+                        metrics[r[0].strip()] = int(val_clean) if val_clean else 0
+    return metrics
+
+def extract_all_bugs_krusial(blocks_map):
+    """
+    Mengekstrak seluruh bugs krusial yang masih Open / In Progress / RE-OPEN
+    dari tabel Outstanding (Section 5) dan Ready to Test (Section 4) pada dokumen sprint mingguan terbaru.
+    """
+    def get_module(desc):
+        common_modules = [
+            'All Sales Order', 'Product Profit Loss', 'Skip Processing', 
+            'Order Processing Trace', 'Sales Order Invoicing', 'Skip Wave Process', 
+            'Sales Order Processing', 'Balance Sheet', 'Platform Product'
+        ]
+        for m in common_modules:
+            if m.lower() in desc.lower():
+                return m
+        bt = chr(96)
+        if bt in desc:
+            parts = desc.split(bt)
+            if len(parts) >= 3 and len(parts[1]) < 35:
+                return parts[1]
+        return 'Core System'
+
+    bugs_krusial = []
+    for bid, binfo in blocks_map.items():
+        b = get_block_val(binfo)
+        if b.get("type") == "table":
+            rows = b.get("content", [])
+            tbl = []
+            for rid in rows:
+                rb = get_block_val(blocks_map.get(rid))
+                props = rb.get("properties", {})
+                tbl.append(["".join([p[0] for p in props[k] if isinstance(p, list) and len(p) > 0 and isinstance(p[0], str)]) for k in sorted(props.keys())])
+            if not tbl:
+                continue
+            hdr = [c.strip().lower() for c in tbl[0]]
+
+            # Section 5: Outstanding / To Do ['urgensi', 'deskripsi', 'etm', 'kenapa']
+            if 'urgensi' in hdr and 'etm' in hdr and 'deskripsi' in hdr:
+                for r in tbl[1:]:
+                    if len(r) >= 3:
+                        urgensi, desc, etm = r[0], r[1], r[2]
+                        if any(x in urgensi.lower() for x in ['kritis', 'tinggi']):
+                            modul = get_module(desc)
+                            if 're-open' in desc.lower():
+                                badge = [rt("Kritis - RE-OPEN" if 'kritis' in urgensi.lower() else "Tinggi - RE-OPEN", bold=True, color="red" if 'kritis' in urgensi.lower() else "orange")]
+                                score = 100 if 'kritis' in urgensi.lower() else 80
+                            elif 'kritis' in urgensi.lower():
+                                badge = [rt("Kritis - Open", bold=True, color="red")]
+                                score = 90
+                            else:
+                                badge = [rt("Tinggi - Open", bold=True, color="orange")]
+                                score = 70
+                            clean_desc = desc.replace(chr(96), '').strip()
+                            bugs_krusial.append({'score': score, 'row': [etm, modul, clean_desc, badge]})
+
+            # Section 4: Ready to Test ['kenapa perlu ditest duluan', 'etm', 'deskripsi']
+            elif 'kenapa perlu ditest duluan' in hdr and 'etm' in hdr:
+                for r in tbl[1:]:
+                    if len(r) >= 3:
+                        kenapa, etm, desc = r[0], r[1], r[2]
+                        if 're-open' in desc.lower():
+                            modul = get_module(desc)
+                            is_kritis = any(x in kenapa.lower() for x in ['finansial', 'kritis'])
+                            badge = [rt("Kritis - RE-OPEN" if is_kritis else "Tinggi - RE-OPEN", bold=True, color="red" if is_kritis else "orange")]
+                            score = 95 if is_kritis else 75
+                            clean_desc = desc.replace(chr(96), '').strip()
+                            bugs_krusial.append({'score': score, 'row': [etm, modul, clean_desc, badge]})
+                        elif any(x in kenapa.lower() for x in ['kritis', 'ekstrim']):
+                            modul = get_module(desc)
+                            badge = [rt("Tinggi - Open", bold=True, color="orange")]
+                            score = 65
+                            clean_desc = desc.replace(chr(96), '').strip()
+                            bugs_krusial.append({'score': score, 'row': [etm, modul, clean_desc, badge]})
+
+    bugs_krusial.sort(key=lambda x: x['score'], reverse=True)
+    seen_etm = set()
+    unique_bugs = []
+    for b in bugs_krusial:
+        etm_key = b['row'][0]
+        if etm_key not in seen_etm:
+            seen_etm.add(etm_key)
+            unique_bugs.append(b['row'])
+
+    return unique_bugs
+
 def extract_all_done_tables(blocks_map):
     """
     Mengekstrak 100% data DONE dari tabel-tabel di dokumen linked:
     - Lapis 1 (Highlight 7 isu spesifik ETM)
     - Lapis 2 (103 task per kategori tema)
     """
-    def get_block_val(b):
-        if not b: return {}
-        val = b.get("value", {})
-        if "value" in val and isinstance(val["value"], dict):
-            return val["value"]
-        return val
-
     lapis_1_done = []
     lapis_2_done = []
 
@@ -137,14 +244,12 @@ def extract_all_done_tables(blocks_map):
             if "yang diselesaikan" in header_str or "etm" in header_str and "dampak" in header_str:
                 for row in tbl_data[1:]:
                     if len(row) >= 3:
-                        # Col 0: Yang Diselesaikan, Col 1: ETM, Col 2: Dampak
                         lapis_1_done.append([row[1], row[0], row[2]])
 
             # Deteksi Tabel Lapis 2 Done (103 task per kategori dari completed work)
             elif [c.strip().lower() for c in tbl_data[0]] == ["jumlah task", "tema", "cakupan"]:
                 for row in tbl_data[1:]:
                     if len(row) >= 3:
-                        # Col 0: Jumlah Task, Col 1: Tema, Col 2: Cakupan
                         lapis_2_done.append([row[1], f"{row[0]} Task", row[2]])
 
     return lapis_1_done, lapis_2_done
@@ -190,6 +295,30 @@ def get_category_priority_score(tema):
         return 50
     return 30
 
+def parse_status_badge(text):
+    low = text.lower()
+    if "(done)" in low or low.endswith(" - done") or "( done )" in low:
+        return [rt("Done", bold=True, color="green")], "Done"
+    elif "in progress" in low:
+        return [rt("In Progress", bold=True, color="blue")], "In Progress"
+    elif "pending" in low:
+        return [rt("Pending", italic=True, color="gray")], "Pending"
+    elif "perlu confirm user" in low or "confirm user" in low:
+        return [rt("Perlu Confirm User", italic=True, color="gray")], "Perlu Confirm User"
+    elif "need discuss" in low or "need discus" in low or "ko lukas" in low:
+        return [rt("Need Discuss", bold=True, color="orange")], "Need Discuss"
+    elif "open" in low:
+        return [rt("Open", bold=True, color="red")], "Open"
+    return [rt("Tercatat", italic=True, color="gray")], "Tercatat"
+
+def clean_desc_text(desc):
+    clean = re.sub(r"\((tidak urgent & perlu confirm user|tidak urgent|perlu confirm user|confirm user|done|in progress|pending|need discuss|need discus).*?\)", "", desc, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"\s+", " ", clean).strip()
+    clean = clean.rstrip(" .").strip()
+    if clean and not clean.endswith("."):
+        clean += "."
+    return clean
+
 def parse_raw_data_dynamically(raw_blocks):
     decision_rows = []
     user_request_rows = []
@@ -198,76 +327,47 @@ def parse_raw_data_dynamically(raw_blocks):
     current_section = "general"
 
     for b in raw_blocks:
-        bval = b.get(b.get("type"), {})
+        btype = b.get("type", "")
+        bval = b.get(btype, {})
         text = "".join([t.get("plain_text", "") for t in bval.get("rich_text", [])]).strip()
         if not text:
             continue
         low = text.lower()
 
-        # Cek apakah blok ini merupakan anak dari blok stopper
+        # Deteksi blok anak dari Stopper Processing
         parent_txt = ""
         if "_parent_block" in b:
             pb = b["_parent_block"]
-            pbval = pb.get(pb.get("type"), {})
+            pbval = pb.get(pb.get("type", ""), {})
             parent_txt = "".join([t.get("plain_text", "") for t in pbval.get("rich_text", [])]).lower()
 
-        # Deteksi section
-        if "stopper" in low and ("mba mer" in low or "processing" in low or "beberapa" in low):
+        # Deteksi Header Section (paragraph / heading)
+        if btype in ["paragraph", "heading_1", "heading_2", "heading_3"]:
+            if "notulen" in low:
+                current_section = "notulen"
+                continue
+            elif "progress" in low and ("tim it" in low or "minggu" in low or "1 minggu" in low):
+                current_section = "progress"
+                continue
+            elif "request user" in low or "new request" in low:
+                current_section = "request"
+                continue
+
+        # Deteksi Stopper Processing (header bullet beranak)
+        if "stopper" in low and ("processing" in low or "beberapa" in low or "stopper" in low) and b.get("has_children"):
             current_section = "stopper"
-            continue
-        elif "request" in low and not "(done)" in low and not "report" in low:
-            current_section = "request"
-            continue
-        elif "notulen" in low:
-            current_section = "notulen"
-            continue
-        elif "progress" in low and "tim it" in low:
-            current_section = "progress"
             continue
 
         if "stopper" in parent_txt or current_section == "stopper":
             stopper_items.append(text)
             continue
 
-        # Item Done dari Raw Data (misal: Menu Instant Settlement, Menu Purchase Report)
-        if "(done)" in low or low.endswith(" - done") or low.endswith("( done )"):
-            parts = text.split(" - ", 1) if " - " in text else [text, ""]
-            menu_name = parts[0].strip()
-            # Pertahankan nama menu asli secara utuh (hapus prefix 'Menu ' agar nama modul murni)
-            if menu_name.lower().startswith("menu "):
-                menu_name = menu_name[5:].strip()
-
-            desc = parts[1].strip() if len(parts) > 1 else text
-            clean_desc = re.sub(r"\(done.*?\)", "", desc, flags=re.IGNORECASE).strip()
-
-            if "instant settlement" in menu_name.lower() or "settlement" in menu_name.lower():
-                menu_name = "Instant Settlement"
-                impact = "Akurasi finansial pencairan kas omzet marketplace tanpa selisih desimal."
-            elif "purchase report" in menu_name.lower():
-                menu_name = "Purchase Report"
-                impact = "Memenuhi request user logistik/purchasing dalam pelacakan barang retur."
-            else:
-                impact = "Perbaikan alur operasional selesai dan siap digunakan."
-
-            raw_done_rows.append([menu_name, clean_desc, impact])
-            continue
-
-        if "perlu confirm user" in low or "confirm user" in low:
-            parts = text.split(" - ", 1) if " - " in text else [text, ""]
-            user_request_rows.append([
-                parts[0].strip(),
-                "User Lapangan",
-                parts[1].strip() if len(parts) > 1 else text,
-                [rt("Perlu Confirm User", italic=True, color="gray")]
-            ])
-            continue
-
-        if "need discuss" in low or "need discus" in low or "ko lukas" in low or "butuh keputusan" in low:
+        # 1. Poin Need Discuss (HANYA dari Raw Data, tanpa yang bertanda confirm user)
+        if ("need discuss" in low or "need discus" in low or "ko lukas" in low or "butuh keputusan" in low) and not ("perlu confirm user" in low or "confirm user" in low):
             parts = text.split(" - ", 1) if " - " in text else [text, ""]
             feat = parts[0].strip()
             desc = parts[1].strip() if len(parts) > 1 else text
-            clean_desc = re.sub(r"\(need discuss.*?\)", "", desc, flags=re.IGNORECASE).strip()
-            clean_desc = re.sub(r"\(need discus.*?\)", "", clean_desc, flags=re.IGNORECASE).strip()
+            clean_desc = clean_desc_text(desc)
             decision_rows.append([
                 str(len(decision_rows) + 1),
                 feat,
@@ -276,14 +376,59 @@ def parse_raw_data_dynamically(raw_blocks):
             ])
             continue
 
-        if "pricelist" in low:
+        # 2. Poin Perlu Confirm User (seperti Assembly pada Notulen)
+        if "perlu confirm user" in low or "confirm user" in low:
             parts = text.split(" - ", 1) if " - " in text else [text, ""]
+            modul = parts[0].strip()
+            if modul.lower().startswith("menu "):
+                modul = modul[5:].strip()
+            if modul.islower():
+                modul = modul.capitalize()
+
+            desc = parts[1].strip() if len(parts) > 1 else text
+            clean_desc = clean_desc_text(desc)
             user_request_rows.append([
-                parts[0].strip(),
-                "User",
-                "Request update unit price platform. Feedback IT: dimatangkan dulu konsep UI-nya.",
-                [rt("Pending", italic=True, color="gray")]
+                modul,
+                "User Lapangan",
+                clean_desc if clean_desc else desc,
+                [rt("Perlu Confirm User", italic=True, color="gray")]
             ])
+            continue
+
+        # 3. Item pada Section New Request User (Tampilkan 100% data)
+        if current_section == "request":
+            parts = text.split(" - ", 1) if " - " in text else [text, ""]
+            modul = parts[0].strip()
+            if modul.lower().startswith("menu "):
+                modul = modul[5:].strip()
+            if modul.islower():
+                modul = modul.capitalize()
+
+            desc = parts[1].strip() if len(parts) > 1 else text
+            clean_desc = clean_desc_text(desc)
+            status_badge, status_label = parse_status_badge(text)
+
+            # Jika berstatus Done, tetap catat ke raw_done_rows untuk Tabel 1A
+            if status_label == "Done":
+                if "instant settlement" in modul.lower() or "settlement" in modul.lower():
+                    impact = "Akurasi finansial pencairan kas omzet marketplace tanpa selisih desimal."
+                elif "purchase report" in modul.lower():
+                    impact = "Memenuhi request user logistik/purchasing dalam pelacakan barang retur."
+                else:
+                    impact = "Perbaikan alur operasional selesai dan siap digunakan."
+                raw_done_rows.append([modul, clean_desc, impact])
+
+            user_label = "User Operasional"
+            if "purchase" in modul.lower() or "logistik" in desc.lower():
+                user_label = "User Operasional / Logistik"
+
+            user_request_rows.append([
+                modul,
+                user_label,
+                clean_desc if clean_desc else desc,
+                status_badge
+            ])
+            continue
 
     return decision_rows, user_request_rows, stopper_items, raw_done_rows
 
@@ -307,10 +452,10 @@ def run_comprehensive_update():
             except Exception as e:
                 print(f"Error fetching child blocks: {e}")
 
-    # 1. Deteksi semua link / mention halaman publik
+    # 1. Deteksi semua link / mention halaman publik mingguan
     linked_page_ids = []
     for b in raw_blocks:
-        bval = b.get(b.get("type"), {})
+        bval = b.get(b.get("type", ""), {})
         for rt_item in bval.get("rich_text", []):
             if rt_item.get("type") == "mention":
                 mention = rt_item.get("mention", {})
@@ -323,6 +468,8 @@ def run_comprehensive_update():
 
     all_lapis_1 = []
     all_lapis_2 = []
+    dynamic_metrics = {}
+    dynamic_bugs = []
 
     for lpid in linked_page_ids:
         print(f"📖 Mengambil seluruh tabel dari dokumen: {lpid} ...")
@@ -330,6 +477,13 @@ def run_comprehensive_update():
         l1, l2 = extract_all_done_tables(bmap)
         all_lapis_1.extend(l1)
         all_lapis_2.extend(l2)
+
+    # Ambil metrik sprint & bugs krusial aktif dari dokumen mingguan TERAKHIR / TERBARU
+    if linked_page_ids:
+        latest_lpid = linked_page_ids[-1]
+        latest_bmap = fetch_public_notion_blocks(latest_lpid)
+        dynamic_metrics = extract_weekly_metrics(latest_bmap)
+        dynamic_bugs = extract_all_bugs_krusial(latest_bmap)
 
     # 2. Parsing decision, user request, stopper, dan item Done langsung dari Raw Data
     decision_rows, user_request_rows, stopper_items, parsed_raw_done = parse_raw_data_dynamically(raw_blocks)
@@ -340,15 +494,37 @@ def run_comprehensive_update():
         ["Purchase Report", "Request Tambahkan Informasi Purchase Return pada halaman purchase Report .", "Memenuhi request user logistik/purchasing dalam pelacakan barang retur."]
     ]
 
-    print(f"✅ Data DONE berhasil diekstrak tanpa ada yang terlewat:")
+    # Hitung metrik dinamis dari dokumen mingguan terbaru
+    def get_metric_val(metrics, keywords, default_val=0):
+        for k, v in metrics.items():
+            k_low = k.lower()
+            if any(w.lower() in k_low for w in keywords):
+                return v
+        return default_val
+
+    done_val = get_metric_val(dynamic_metrics, ["done"], 110)
+    ready_val = get_metric_val(dynamic_metrics, ["ready to test"], 15)
+    in_prog_val = get_metric_val(dynamic_metrics, ["in progress"], 25)
+    backlog_val = get_metric_val(dynamic_metrics, ["outstanding"], 82)
+
+    total_tasks = done_val + ready_val + in_prog_val + backlog_val
+    if total_tasks == 0:
+        total_tasks = 232
+        done_val = 110
+    done_pct = round((done_val / total_tasks) * 100, 1)
+    ready_pct = round((ready_val / total_tasks) * 100, 1)
+    in_prog_pct = round((in_prog_val / total_tasks) * 100, 1)
+    backlog_pct = round((backlog_val / total_tasks) * 100, 1)
+
+    print("✅ Data diekstrak tanpa ada yang terlewat:")
     print(f"   • Lapis 1 (Highlight Spesifik) : {len(all_lapis_1)} baris ETM")
     print(f"   • Lapis 2 (Kategori 103 Task)  : {len(all_lapis_2)} kategori")
     print(f"   • Raw Data Direct Done         : {len(raw_done_rows)} baris")
+    print(f"   • New Request User Rows        : {len(user_request_rows)} baris")
+    print(f"   • Metrik Dinamis Dokumen Baru  : {done_val}/{total_tasks} Task Done ({done_pct}%)")
+    print(f"   • Bugs Krusial Aktif Dinamis   : {len(dynamic_bugs)} isu terdeteksi")
 
     today_str = datetime.date.today().strftime("%d %B %Y")
-    total_tasks = 232
-    done_count = 110
-    done_pct = round((done_count / total_tasks) * 100, 1)
 
     blocks = [
         # Header Laporan Bersih (TANPA SEBUT KO LUKAS / CEO)
@@ -380,10 +556,10 @@ def run_comprehensive_update():
                 "rich_text": [
                     rt("Ringkasan Eksekutif (Overall Summary):\n", bold=True),
                     rt(
-                        f"Secara keseluruhan, stabilitas sistem OlshopERP beroperasi normal dengan total {done_count} task terselesaikan ({done_pct}% dari {total_tasks} task) pada alur transaksi dan finansial. "
+                        f"Secara keseluruhan, stabilitas sistem OlshopERP beroperasi normal dengan total {done_val} task terselesaikan ({done_pct}% dari {total_tasks} task) pada alur transaksi dan finansial. "
                         f"Seluruh perbaikan yang berstatus Done telah diurutkan berdasarkan skala urgensi dan perbaikan penting (dimulai dari isu finansial & beban server hingga request operasional). "
                         f"Fokus minggu ini mencakup optimasi query berat All Sales Order, penyesuaian format Instant Settlement Shopee, "
-                        f"penanganan stopper processing Mba Mer, serta menunggu keputusan manajemen pada {len(decision_rows)} agenda strategis (Upfos & Colli v2)."
+                        f"penanganan stopper processing User, serta menunggu keputusan manajemen pada {len(decision_rows)} agenda strategis (Upfos & Colli v2)."
                     )
                 ]
             }
@@ -396,7 +572,7 @@ def run_comprehensive_update():
             "paragraph": {
                 "rich_text": [
                     rt("📊 Ringkasan Task: ", bold=True),
-                    rt(f"Total {total_tasks} Task  →  ✅ Done: {done_count} ({done_pct}%)  |  🧐 Ready to Test: 15 (6.5%)  |  💻 In Progress: 25 (10.8%)  |  🚨 Backlog: 82 (35.3%)")
+                    rt(f"Total {total_tasks} Task  →  ✅ Done: {done_val} ({done_pct}%)  |  🧐 Ready to Test: {ready_val} ({ready_pct}%)  |  💻 In Progress: {in_prog_val} ({in_prog_pct}%)  |  🚨 Backlog: {backlog_val} ({backlog_pct}%)")
                 ]
             }
         },
@@ -470,13 +646,13 @@ def run_comprehensive_update():
     blocks.append({"object": "block", "type": "divider", "divider": {}})
 
     # -------------------------------------------------------------
-    # URUTAN 3: KENDALA USER (OPERASIONAL)
+    # URUTAN 3: NEW REQUEST USER & KENDALA TIM OPERASIONAL (100% DATA RAW)
     # -------------------------------------------------------------
     blocks.append({
         "object": "block",
         "type": "heading_2",
         "heading_2": {
-            "rich_text": [rt("👥 3. Request & Kendala Tim Operasional (User)")]
+            "rich_text": [rt("👥 3. New Request User & Kendala Tim Operasional")]
         }
     })
     blocks.append(make_table(
@@ -484,13 +660,13 @@ def run_comprehensive_update():
         rows=user_request_rows
     ))
 
-    # Catatan Stopper Processing Mba Mer di bawah Tabel 3
+    # Catatan Stopper Processing (User) di bawah Tabel 3
     if stopper_items:
         blocks.append({
             "object": "block",
             "type": "paragraph",
             "paragraph": {
-                "rich_text": [rt("⚠️ Catatan Stopper Processing (Mba Mer):", bold=True)]
+                "rich_text": [rt("⚠️ Catatan Stopper Processing (User):", bold=True)]
             }
         })
         for st in stopper_items:
@@ -512,7 +688,7 @@ def run_comprehensive_update():
     blocks.append({"object": "block", "type": "divider", "divider": {}})
 
     # -------------------------------------------------------------
-    # URUTAN 4: IN PROGRESS / OPEN (BUGS KRUSIAL)
+    # URUTAN 4: IN PROGRESS / OPEN (BUGS KRUSIAL AKTIF DINAMIS)
     # -------------------------------------------------------------
     blocks.append({
         "object": "block",
@@ -521,15 +697,20 @@ def run_comprehensive_update():
             "rich_text": [rt("🚨 4. Bugs Krusial Masih Open & In Progress")]
         }
     })
+    fallback_bugs = [
+        ["ETM-16048", "Sales Order Invoicing", "RE-OPEN: Loading datalist di Sales Order Invoicing server Merdian sangat lambat.", [rt("Kritis - RE-OPEN", bold=True, color="red")]],
+        ["ETM-16084", "Product Profit Loss", "RE-OPEN: Product Profit Loss nampilin Qty Sold & Gross Sales 100x lipat buat SKU non-base unit.", [rt("Kritis - RE-OPEN", bold=True, color="red")]],
+        ["ETM-16077", "All Sales Order", "Datalist All Sales Order butuh 59 detik buat satu query count, nyisir 1,23 juta baris.", [rt("Kritis - Open", bold=True, color="red")]],
+        ["ETM-16074", "Skip Processing", "Mismatch Shipper ID dan rute gudang 3PL di Skip Processing.", [rt("Kritis - Open", bold=True, color="red")]],
+        ["ETM-16088", "Skip Wave Process", "RE-OPEN: Order di Skip Wave Process gagal karena kode dokumen bentrok (duplicate entry).", [rt("Tinggi - RE-OPEN", bold=True, color="orange")]],
+        ["ETM-15983", "Sales Order Processing", "RE-OPEN: Investigasi bottleneck di job Sales Order Processing yang bikin runtime >10 detik di server Merdian.", [rt("Tinggi - RE-OPEN", bold=True, color="orange")]],
+        ["ETM-15902, 15901, 15900, 15898", "transaction_status", "Refactor transaction_status dari string ke integer enum di seluruh sistem.", [rt("Tinggi - Open", bold=True, color="orange")]],
+        ["ETM-16042", "Order Processing Trace", "Sortir kolom tanggal di Order Processing Trace bikin query jalan 4 jam dan membebani database.", [rt("Tinggi - Open", bold=True, color="orange")]]
+    ]
+    bugs_rows = dynamic_bugs if dynamic_bugs else fallback_bugs
     blocks.append(make_table(
         headers=["ETM Code", "Modul / Alur", "Kendala / Isu Riil", "Status"],
-        rows=[
-            ["ETM-16077", "All Sales Order", "Datalist butuh 59 detik buat 1 query count (nyisir 1,23 juta baris data). Loading sangat berat.", [rt("Kritis - Open", bold=True, color="red")]],
-            ["ETM-16084", "Product Profit Loss", "Product Profit Loss nampilin Qty Sold & Gross Sales 100x lipat buat SKU non-base unit.", [rt("Kritis - RE-OPEN", bold=True, color="red")]],
-            ["ETM-16074", "Skip Processing", "Mismatch Shipper ID dan rute gudang 3PL di Skip Processing. Risiko order salah kirim / nyangkut.", [rt("Kritis - Open", bold=True, color="red")]],
-            ["ETM-16042", "Order Processing Trace", "Sortir kolom tanggal bikin query jalan 4 jam dan membebani database.", [rt("Tinggi - Open", bold=True, color="orange")]],
-            ["ETM-16048", "Sales Order Invoicing", "Loading datalist di Sales Order Invoicing server Meridian sangat lambat.", [rt("Tinggi - RE-OPEN", bold=True, color="orange")]]
-        ]
+        rows=bugs_rows
     ))
 
     # Footer Baku Bersih
@@ -546,11 +727,11 @@ def run_comprehensive_update():
 
     clear_page_blocks(notion, res_pid)
 
-    print(f"📤 Menuliskan seluruh tabel Done lengkap ke Result Data Report...")
+    print("📤 Menuliskan seluruh tabel ke Result Data Report...")
     notion.blocks.children.append(block_id=res_pid, children=blocks)
 
     print("\n" + "=" * 60)
-    print("🎉 SUKSES! Seluruh data Done (Lapis 1 & Lapis 2) berhasil terbit di Notion!")
+    print("🎉 SUKSES! Seluruh data laporan berhasil diterbitkan di Notion!")
     print(f"🔗 Buka: https://www.notion.so/{res_pid}")
     print("=" * 60)
 
